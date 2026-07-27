@@ -11,5 +11,20 @@
 知识库管理：在线更新技术文档（双栏 PDF 友好）与故障四元组，实时生效。
 RAGAS 评估：内置评估脚本，可量化忠实性、上下文精度/召回等指标。
 
+准备模型文件
+将以下文件放入 models/ 目录：
+model_config.pkl # 分类模型配置（含 scaler）
+best_traceability_model.pth # 分类模型权重
+bge-large-zh-v1.5/ # 嵌入模型文件夹
+bge-reranker-v2-m3/ # 重排序模型文件夹
+
+构建知识库（需要文档与四元组）
+bash
+python src/build_kb.py
+启动诊断系统
+bash
+streamlit run src/app.py
+浏览器访问 http://localhost:8501 即可使用。
+
 <img width="1771" height="3946" alt="QQ_1785138965993" src="https://github.com/user-attachments/assets/9b66ecde-4afd-465d-8b43-eb723034f8ee" />
 
