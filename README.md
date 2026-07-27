@@ -19,10 +19,8 @@ bge-large-zh-v1.5/ # 嵌入模型文件夹
 bge-reranker-v2-m3/ # 重排序模型文件夹
 
 构建知识库（需要文档与四元组）
-bash
 python src/build_kb.py
 启动诊断系统
-bash
 streamlit run src/app.py
 浏览器访问 http://localhost:8501 即可使用。
 
