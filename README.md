@@ -11,4 +11,5 @@
 知识库管理：在线更新技术文档（双栏 PDF 友好）与故障四元组，实时生效。
 RAGAS 评估：内置评估脚本，可量化忠实性、上下文精度/召回等指标。
 
-![Uploading QQ_1785138965993.png…]()
+<img width="1771" height="3946" alt="QQ_1785138965993" src="https://github.com/user-attachments/assets/9b66ecde-4afd-465d-8b43-eb723034f8ee" />
+
