@@ -24,5 +24,6 @@ python src/build_kb.py
 streamlit run src/app.py
 浏览器访问 http://localhost:8501 即可使用。
 
-<img width="1771" height="3946" alt="QQ_1785138965993" src="https://github.com/user-attachments/assets/9b66ecde-4afd-465d-8b43-eb723034f8ee" />
+<img width="1736" height="7014" alt="QQ_1786253632752" src="https://github.com/user-attachments/assets/ebf7a0d0-6589-495a-9cfd-ada0d80a90ed" />
+
 
