@@ -23,6 +23,7 @@ python src/build_kb.py
 启动诊断系统
 streamlit run src/app.py
 浏览器访问 http://localhost:8501 即可使用。
-<img width="1725" height="18502" alt="longCapture" src="https://github.com/user-attachments/assets/430e1c50-b393-4c8d-b95a-47e995c943f3" />
 
+
+<img width="1725" height="18502" alt="longCapture" src="https://github.com/user-attachments/assets/c1b2cb48-6809-4919-9427-e078935dae8b" />
 
