@@ -124,5 +124,6 @@ redis-cli FLUSHDB                                   # 清空整个库（会清�
 ```
 
 
-<img width="1725" height="18502" alt="longCapture" src="https://github.com/user-attachments/assets/c1b2cb48-6809-4919-9427-e078935dae8b" />
+<img width="1738" height="12628" alt="QQ_1787191717918" src="https://github.com/user-attachments/assets/1c8c9b13-bd1f-4b7a-b8cb-795b649d99b5" />
+
 
