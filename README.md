@@ -9,7 +9,7 @@
 - 单条/批量诊断：输入 12 维特征值或上传 CSV 文件，自动分类并生成诊断报告；批量结果可一键导出 CSV。
 - 专家 Agent：LLM 自主规划调用分类、检索、相似案例、特征重要性、历史诊断等工具，多步推理；LLM 调用带超时与自动重试。
 - 多轮对话记忆：支持连续追问，Agent 自动总结历史对话并复用已有结果。
-- 长期记忆（Redis 可选）：会话消息、批量诊断、单卷诊断与检索缓存跨重启持久化，Redis → 文件 → 内存三级降级。
+- 长期记忆（Redis/MySQL 可选）：会话消息与检索缓存走 Redis；单卷诊断记录可落 MySQL，支持按故障类型/时间 SQL 查询；Redis → 文件 → 内存三级降级。
 - 历史诊断查询：输入 12 维特征即可反查该卷历史诊断记录（跨会话追溯）。
 - 知识库管理：在线更新技术文档（双栏 PDF 友好）与故障四元组，实时生效。
 - REST API：FastAPI 服务（故障分类 / 批量诊断 / 知识问答），支持 session_id 会话持久化，供 MES/ERP 集成。
@@ -65,6 +65,7 @@ python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 | POST | `/api/v1/diagnose/batch` | 批量诊断：JSON 数组 → 逐条结果 + 分布统计 |
 | POST | `/api/v1/diagnose/batch/file` | 批量诊断：上传 CSV 文件（multipart） |
 | POST | `/api/v1/query` | LLM 知识问答 / Agent 多步诊断（需 API Key，支持 session_id 会话持久化） |
+| GET | `/api/v1/diag/history` | 单卷诊断历史查询：`?fault_cn=&days=&limit=`（需启用 MySQL） |
 
 单条诊断示例（curl）：
 
@@ -191,6 +192,11 @@ schtasks /create /tn "WSL Redis Autostart" /tr "C:\Windows\System32\wsl.exe -d U
 | `RAG_MEMORY_TTL_SECONDS` | `2592000`（30 天） | 会话消息与诊断记录存活时间 |
 | `RAG_MAX_STORED_MESSAGES` | `100` | 每个会话最多保留的消息条数 |
 | `RAG_MEMORY_DIR` | `data/memory` | 文件降级目录（仅 Redis 不可用时使用） |
+| `RAG_MYSQL_HOST` | 空（不启用） | MySQL 主机，如 `127.0.0.1`；设置后启用诊断记录结构化存储 |
+| `RAG_MYSQL_PORT` | `3306` | MySQL 端口 |
+| `RAG_MYSQL_USER` | `rag` | MySQL 用户 |
+| `RAG_MYSQL_PASSWORD` | `rag123456` | MySQL 密码 |
+| `RAG_MYSQL_DB` | `rag_agent` | MySQL 数据库（表 `rag_diag` 自动创建） |
 
 示例（Windows PowerShell）：
 
@@ -223,6 +229,34 @@ redis-cli GET  rag:session:{sid}:messages           # 查看会话消息原文
 redis-cli DEL  <key>                                # 删除单个键
 redis-cli FLUSHDB                                   # 清空整个库（会清掉全部记忆，慎用）
 ```
+
+---
+
+## MySQL 诊断记录库（可选，推荐启用）
+
+单卷诊断记录默认只按特征哈希存取（仅支持精确反查）。启用 MySQL 后，诊断记录落
+`rag_diag` 表，可按**故障类型、时间范围、置信度**做 SQL 查询，便于 MES 追溯与统计分析。
+
+### 1. 初始化数据库与账号（一次性，需 root 密码）
+
+```powershell
+mysql -u root -p < sql/init_mysql.sql
+```
+
+脚本会创建数据库 `rag_agent` 与专用账号 `rag/rag123456`；数据表由应用首次启动时自动创建。
+
+### 2. 配置环境变量并启动
+
+```powershell
+$env:RAG_MYSQL_HOST = "127.0.0.1"
+$env:RAG_MYSQL_USER = "rag"
+$env:RAG_MYSQL_PASSWORD = "rag123456"
+$env:RAG_MYSQL_DB = "rag_agent"
+streamlit run src/app.py
+```
+
+启用后，Web 界面「历史诊断查询」会额外提供“最近诊断记录”查询（按故障类型/天数），
+REST API 提供 `GET /api/v1/diag/history`。MySQL 不可用时自动回落到 Redis/文件，不影响运行。
 
 ---
 
