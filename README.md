@@ -13,7 +13,7 @@
 - 历史诊断查询：输入 12 维特征即可反查该卷历史诊断记录（跨会话追溯）。
 - 知识库管理：在线更新技术文档（双栏 PDF 友好）与故障四元组，实时生效。
 - REST API：FastAPI 服务（故障分类 / 批量诊断 / 知识问答），支持 session_id 会话持久化，供 MES/ERP 集成。
-- RAGAS 评估：内置评估脚本，可量化忠实性、上下文精度/召回等指标。
+- RAGAS 评估：内置评估脚本，可量化忠实性、上下文精度/召回等指标（评估 Agent 真实链路，用法见下文 RAGAS 评估）。
 
 目录结构
 src/
@@ -21,6 +21,12 @@ src/
   api.py              # FastAPI REST 服务（供 MES/ERP 集成）
   service.py          # 核心服务层：模型/检索/预测/Agent，前端与 API 共用
   kb_utils.py         # 知识库解析公共工具（双栏 PDF、特征重排、四元组）
+  model_def.py        # 分类模型结构（MIC 注意力网络与集成）
+  build_kb.py         # 知识库全量构建（文档分块 + 四元组入 Milvus）
+  rebuild_feature_vectors.py  # 仅重建故障特征向量集合
+  kb_audit.py         # 知识库体检（只读：文档质量指标 + 库内垃圾块溯源）
+  eval_generate.py    # RAGAS 评估数据生成（走 Agent 真实推理链路）
+  eval_ragas.py       # RAGAS 指标评估（适配 ragas 0.4.x）
   logger.py           # 统一日志（控制台 + logs/app.log）
   tools.py            # Agent 工具集（分类/检索/相似案例/特征重要性/批量/历史查询）
   agent_graph.py      # LangGraph ReAct Agent 图（LLM 超时 + 自动重试）
@@ -119,6 +125,43 @@ curl -X POST http://localhost:8000/api/v1/query \
 | `LLM_TIMEOUT` | `60`（秒） | LLM 单次调用超时 |
 | `LLM_MAX_RETRIES` | `3` | LLM 调用失败自动重试次数 |
 | `LLM_RETRY_BACKOFF` | `2.0`（秒） | 重试退避基数（第 n 次等待 n × backoff 秒） |
+
+### Agent 工具返回契约
+
+所有 Agent 工具统一返回 JSON：成功时含 `success: true` 与业务字段；失败时含
+`success: false`、`error_code`、`message`、`recoverable` 与 `recommended_action`
+（建议的恢复动作：追问用户 / 换角度重试 / 停止说明）。
+
+- 特征类工具参数为数字数组（Schema 自动生成），工具内部兼容字符串与中文逗号输入；
+- 批量诊断的 `details` 每条含 `features_named`（12 维特征带名字典，含六个
+  `is_*` 波谷标志位与六个宽度值），解读特征值以它为准；
+- details 样本数超过 `RAG_BATCH_DETAIL_LIMIT`（默认 50）时截断并标记
+  `details_truncated`，完整逐卷结果自动写入长期记忆，可用 `query_hist_diag_tool`
+  按特征反查。
+
+相关环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `RAG_BATCH_DETAIL_LIMIT` | `50` | 批量诊断返回给 LLM 的逐条详情上限，完整结果不受影响 |
+
+---
+
+## RAGAS 评估（可选）
+
+评估的是当前系统的真实行为：评估问题集（`data/eval_questions.json`）→ Agent
+完整推理生成回答与检索上下文 → ragas 打分，而非单独的"检索 + 生成"旧链路。
+
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-xxx"
+python src/eval_generate.py   # 生成 data/eval_dataset.json（逐题调用 Agent）
+python src/eval_ragas.py      # 输出 data/ragas_eval.csv 与指标摘要
+```
+
+- 指标：faithfulness / answer_relevancy / context_precision / context_recall
+- 数据集字段为 ragas 0.4 schema：`user_input` / `reference` / `retrieved_contexts` / `response`
+- 评估 LLM 的超时与重试复用 `LLM_TIMEOUT` / `LLM_MAX_RETRIES` 环境变量
+- 依赖 ragas==0.4.3（requirements.txt 已锁定）
 
 ---
 
@@ -260,8 +303,20 @@ REST API 提供 `GET /api/v1/diag/history`。MySQL 不可用时自动回落到 R
 
 ---
 
+### 知识库体检（只读）
 
-<img width="1732" height="10793" alt="QQ_1787308296311" src="https://github.com/user-attachments/assets/a4b79754-ef9a-4f50-a539-de28b4e084f8" />
+```powershell
+python src/kb_audit.py
+```
 
+1. 逐 PDF 统计碎行率、平均行长、全角混用率等质量指标，输出问题文档清单
+   （扫描件 / 低质量 OCR 文本层会在入库前暴露）；
+2. 审计 Milvus `rag_knowledge` 已存文本块，垃圾块按来源文档聚合排名。
 
+报告输出至 `data/kb_audit_report.csv`，判定阈值仅供筛查参考，脚本不修改任何数据。
+建议在每次批量更新文档或重建知识库后运行一次，及时发现问题来源文档。
+
+---
+
+<img width="1754" height="3671" alt="样例" src="https://github.com/user-attachments/assets/8aa45853-09eb-4f2f-9a1e-b81d9db277d0" />
 
