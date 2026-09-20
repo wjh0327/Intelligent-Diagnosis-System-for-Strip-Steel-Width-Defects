@@ -1,50 +1,66 @@
 # 带钢宽度缺陷智能诊断系统
 
 基于大小模型协同的工业缺陷诊断 Agent，支持多轮对话、批量 CSV 诊断、知识问答和 RAGAS 量化评估。  
-系统采用 LangGraph 构建 ReAct Agent，将故障分类模型、知识检索、相似案例匹配、特征重要性分析等封装为工具，由 LLM 动态调度，实现从故障识别到根因分析的端到端诊断。
+系统采用 LangGraph 构建 ReAct Agent，将诊断模型（双分支混合卷积神经网络）、知识检索、相似案例匹配、
+特征重要性分析等封装为工具，由 LLM 动态调度，实现从缺陷识别到根因分析的端到端诊断。
 
 注意：本仓库仅包含代码与示例数据，真实生产数据、模型权重及完整知识库未公开。
 
 主要功能
-- 单条/批量诊断：输入 12 维特征值或上传 CSV 文件，自动分类并生成诊断报告；批量结果可一键导出 CSV。
-- 专家 Agent：LLM 自主规划调用分类、检索、相似案例、特征重要性、历史诊断等工具，多步推理；LLM 调用带超时与自动重试。
+- 单条/批量诊断：上传与 `data/width.csv` 同格式的带钢数据（STRIPNO + 6 工艺参数 + 3 段全长宽度曲线），
+  服务自动计算 6 个机理标志位并诊断；批量结果可一键导出 CSV。
+- 置信度门限与人工复核：最高概率 < 0.6 或前两类概率差 < 0.2 的样本自动标记"需人工复核"，
+  不强行给出确定性结论。
+- 梯度归因证据链：每条带钢输出 Top 证据特征（梯度×输入）与曲线段关注度，并匹配根因知识模板
+  生成诊断建议，结论可审计。
+- 专家 Agent：LLM 自主规划调用诊断、检索、相似案例、特征重要性、历史诊断等工具，多步推理；
+  LLM 调用带超时与自动重试。
 - 多轮对话记忆：支持连续追问，Agent 自动总结历史对话并复用已有结果。
-- 长期记忆（Redis/MySQL 可选）：会话消息与检索缓存走 Redis；单卷诊断记录可落 MySQL，支持按故障类型/时间 SQL 查询；Redis → 文件 → 内存三级降级。
-- 历史诊断查询：输入 12 维特征即可反查该卷历史诊断记录（跨会话追溯）。
+- 长期记忆（Redis/MySQL 可选）：会话消息与检索缓存走 Redis；单卷诊断记录可落 MySQL，
+  支持按故障类型/时间 SQL 查询；Redis → 文件 → 内存三级降级。
+- 历史诊断查询：按追溯键（STRIPNO + 12 维机理特征哈希）反查该卷历史诊断记录（跨会话）。
 - 知识库管理：在线更新技术文档（双栏 PDF 友好）与故障四元组，实时生效。
-- REST API：FastAPI 服务（故障分类 / 批量诊断 / 知识问答），支持 session_id 会话持久化，供 MES/ERP 集成。
+- REST API：FastAPI 服务（单条/批量诊断 / 知识问答），支持 session_id 会话持久化，供 MES/ERP 集成。
 - RAGAS 评估：内置评估脚本，可量化忠实性、上下文精度/召回等指标（评估 Agent 真实链路，用法见下文 RAGAS 评估）。
 
 目录结构
 src/
-  app.py              # Streamlit 前端（复用 service 核心层）
   api.py              # FastAPI REST 服务（供 MES/ERP 集成）
   service.py          # 核心服务层：模型/检索/预测/Agent，前端与 API 共用
+  hybrid_model.py     # 诊断模型推理服务（加载权重、flag 现算、置信度门限、梯度归因）
+  cnn_model.py        # 双分支混合CNN结构（曲线卷积分支 + 12维特征分支）与预测/归因函数
+  features.py         # 机理特征提取：6个规则标志位按原版 te.py 逻辑现算（+71维实验特征）
+  tools.py            # Agent 工具集（诊断/检索/相似案例/特征重要性/批量/历史查询）
+  agent_graph.py      # LangGraph ReAct Agent 图（LLM 超时 + 自动重试）
+  memory_store.py     # 长期记忆存储（Redis → 文件 → 内存三级降级）
   kb_utils.py         # 知识库解析公共工具（双栏 PDF、特征重排、四元组）
-  model_def.py        # 分类模型结构（MIC 注意力网络与集成）
   build_kb.py         # 知识库全量构建（文档分块 + 四元组入 Milvus）
   rebuild_feature_vectors.py  # 仅重建故障特征向量集合
   kb_audit.py         # 知识库体检（只读：文档质量指标 + 库内垃圾块溯源）
   eval_generate.py    # RAGAS 评估数据生成（走 Agent 真实推理链路）
   eval_ragas.py       # RAGAS 指标评估（适配 ragas 0.4.x）
   logger.py           # 统一日志（控制台 + logs/app.log）
-  tools.py            # Agent 工具集（分类/检索/相似案例/特征重要性/批量/历史查询）
-  agent_graph.py      # LangGraph ReAct Agent 图（LLM 超时 + 自动重试）
-  memory_store.py     # 长期记忆存储（Redis → 文件 → 内存三级降级）
+  app.py              # Streamlit 旧入口（保留，新功能以 API + 前端为主）
 app_file_uploader.py  # 知识库在线更新界面
 
 准备模型文件
 将以下文件放入 models/ 目录：
-model_config.pkl # 分类模型配置（含 scaler）
-best_traceability_model.pth # 分类模型权重
-bge-large-zh-v1.5/ # 嵌入模型文件夹
-bge-reranker-v2-m3/ # 重排序模型文件夹
+cnn_hybrid_diag.pt            # 诊断模型权重（双分支混合CNN，单种子）
+cnn_hybrid_importance.json    # 按类梯度归因（特征重要性工具的数据源）
+model_config.pkl              # 仅含 12 维 scaler，供 build_kb / rebuild_feature_vectors 使用
+bge-large-zh-v1.5/            # 嵌入模型文件夹
+bge-reranker-v2-m3/           # 重排序模型文件夹
 
 构建知识库（需要文档与四元组）
 python src/build_kb.py
 启动诊断系统
+方式一（推荐）：FastAPI 后端 + Web 前端
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+方式二：Streamlit 界面
 streamlit run src/app.py
-浏览器访问 http://localhost:8501 即可使用。
+浏览器访问 http://localhost:8501 即可使用。上传与 width.csv 同格式的 CSV 后，
+可在对话中让 Agent 完成批量诊断与逐条追问（页面「历史诊断查询」仅支持旧格式记录）。
 
 运行日志输出到 `logs/app.log`（自动创建）；上传的 CSV 临时文件存放于 `data/tmp_uploads/`，超过 24 小时自动清理。
 
@@ -52,7 +68,7 @@ streamlit run src/app.py
 
 ## REST API（供 MES/ERP 集成）
 
-除 Streamlit 界面外，系统提供 FastAPI 服务，外部系统可通过 HTTP 调用诊断能力（故障分类、批量诊断、知识问答）。
+除 Web 界面外，系统提供 FastAPI 服务，外部系统可通过 HTTP 调用诊断能力（单条/批量诊断、知识问答）。
 
 启动 API 服务：
 
@@ -66,10 +82,10 @@ python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查（模型/Redis/LLM 配置状态） |
-| GET | `/api/v1/meta/features` | 特征字段顺序与故障类型清单 |
-| POST | `/api/v1/diagnose` | 单条诊断：12 维特征向量 → 故障类型/置信度/关键特征 |
-| POST | `/api/v1/diagnose/batch` | 批量诊断：JSON 数组 → 逐条结果 + 分布统计 |
-| POST | `/api/v1/diagnose/batch/file` | 批量诊断：上传 CSV 文件（multipart） |
+| GET | `/api/v1/meta/features` | 诊断输入必需列与故障类型清单 |
+| POST | `/api/v1/diagnose` | 单条诊断：带钢记录 JSON → 故障类型/置信度/需人工复核/归因证据 |
+| POST | `/api/v1/diagnose/batch` | 批量诊断：带钢记录数组 → 逐条结果 + 分布统计 |
+| POST | `/api/v1/diagnose/batch/file` | 批量诊断：上传 CSV 文件（multipart，推荐） |
 | POST | `/api/v1/query` | LLM 知识问答 / Agent 多步诊断（需 API Key，支持 session_id 会话持久化） |
 | GET | `/api/v1/diag/history` | 单卷诊断历史查询：`?fault_cn=&days=&limit=`（需启用 MySQL） |
 
@@ -78,7 +94,12 @@ python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```bash
 curl -X POST http://localhost:8000/api/v1/diagnose \
   -H "Content-Type: application/json" \
-  -d '{"features": [1,1,1,0,0,1,1247.3,1257.3,10,1239.8,1257.6,1234.0]}'
+  -d '{"strip": {"STRIPNO": "220416900800",
+                 "FMWTARGETHOT": 1197.53, "RDWTARGETTOTAL": 1202.53, "PDIWIDTHTOL": 8.55,
+                 "FMWIDTHACTHOT": 1196.74, "RMWIDTHACTHOT": 1200.15, "FMWTARGETCOL": 1183.55,
+                 "RMDATASEQ": "1201.3,1200.8,1199.5,...",
+                 "FMDATASEQ": "1198.6,1197.9,...",
+                 "DCDATASEQ": "1195.2,1194.8,..."}}'
 ```
 
 响应示例：
@@ -88,9 +109,11 @@ curl -X POST http://localhost:8000/api/v1/diagnose \
   "request_id": "3f9a2c1e8b4d",
   "fault_cn": "整体窄",
   "fault_desc": "精轧自然宽展偏差或给定PDI不合适导致精轧整体窄",
-  "confidence": 0.7069,
-  "probabilities": {"整体窄": 0.7069, "...": 0.0123},
-  "top_features": [{"feature": "is_FM", "importance": 0.31}, "..."]
+  "confidence": 0.9982,
+  "needs_review": false,
+  "evidence": "整体窄(+9.99)；精轧目标宽(冷)(+2.57)｜曲线关注:精轧段",
+  "probabilities": {"整体窄": 0.9982, "...": 0.0009},
+  "top_features": [{"feature": "整体窄", "importance": 3.49}, "..."]
 }
 ```
 
@@ -101,7 +124,9 @@ curl -X POST http://localhost:8000/api/v1/diagnose/batch/file \
   -F "file=@test_samples.csv"
 ```
 
-CSV 列名须与 `/api/v1/meta/features` 返回的特征顺序一致（或直接使用特征列名）。
+CSV 列要求：STRIPNO(可选) + 6 个工艺参数 + 3 段全长宽度曲线；6 个 `is_*` 规则标志位
+由服务按机理逻辑自动计算，无需提供。响应中 `needs_review` 为 `true` 的样本表示
+置信度不足，建议人工确认。
 
 知识问答（带会话持久化）：
 
@@ -132,12 +157,14 @@ curl -X POST http://localhost:8000/api/v1/query \
 `success: false`、`error_code`、`message`、`recoverable` 与 `recommended_action`
 （建议的恢复动作：追问用户 / 换角度重试 / 停止说明）。
 
-- 特征类工具参数为数字数组（Schema 自动生成），工具内部兼容字符串与中文逗号输入；
-- 批量诊断的 `details` 每条含 `features_named`（12 维特征带名字典，含六个
-  `is_*` 波谷标志位与六个宽度值），解读特征值以它为准；
+- 诊断类工具（`diagnose_strip_tool` / `batch_csv_diagnosis_tool`）的输入为带钢原始记录；
+  6 个 `is_*` 机理标志位由服务按原版逻辑自动计算，无需外部提供；
+- 批量诊断的 `details` 每条含 `features_named`（12 维机理特征带名字典：六个宽度参数与
+  六个自动计算的 `is_*` 标志位）与 `needs_review`、`归因证据` 字段，解读特征值以
+  `features_named` 为准；
 - details 样本数超过 `RAG_BATCH_DETAIL_LIMIT`（默认 50）时截断并标记
   `details_truncated`，完整逐卷结果自动写入长期记忆，可用 `query_hist_diag_tool`
-  按特征反查。
+  按追溯键反查。
 
 相关环境变量：
 
@@ -254,13 +281,13 @@ streamlit run src/app.py
 | --- | --- | --- |
 | `rag:session:{sid}:messages` | 会话消息（JSON，最近 100 条） | 30 天 |
 | `rag:session:{sid}:batch` | 批量诊断状态与汇总 | 30 天 |
-| `rag:diag:{feat_hash}` | 单卷诊断记录（按 12 维特征哈希索引） | 30 天 |
+| `rag:diag:{feat_hash}` | 单卷诊断记录（按 STRIPNO + 12 维机理特征哈希索引） | 30 天 |
 | `rag:cache:retrieve:{sha1}` | 检索结果缓存（知识库更新后自动失效） | 24 小时 |
 
 会话 ID（`sid`）由 URL 参数 `?sid=` 指定：首次访问自动生成，之后用**同一个带 sid 的网址**打开即可跨重启恢复完整对话历史。
 
-单卷诊断记录支持按特征反查：在 Web 界面「历史诊断查询」输入 12 维特征（或让 Agent 调用
-`query_hist_diag_tool`），即可查询该卷此前是否诊断过及诊断结论。
+单卷诊断记录支持按追溯键反查：在对话中让 Agent 调用 `query_hist_diag_tool`（输入带钢记录，
+服务自动计算 STRIPNO + 12 维追溯键），即可查询该卷此前是否诊断过及诊断结论。
 
 ### 查看记忆与缓存
 
@@ -277,7 +304,7 @@ redis-cli FLUSHDB                                   # 清空整个库（会清�
 
 ## MySQL 诊断记录库（可选，推荐启用）
 
-单卷诊断记录默认只按特征哈希存取（仅支持精确反查）。启用 MySQL 后，诊断记录落
+单卷诊断记录默认只按追溯键存取（仅支持精确反查）。启用 MySQL 后，诊断记录落
 `rag_diag` 表，可按**故障类型、时间范围、置信度**做 SQL 查询，便于 MES 追溯与统计分析。
 
 ### 1. 初始化数据库与账号（一次性，需 root 密码）
@@ -316,7 +343,5 @@ python src/kb_audit.py
 报告输出至 `data/kb_audit_report.csv`，判定阈值仅供筛查参考，脚本不修改任何数据。
 建议在每次批量更新文档或重建知识库后运行一次，及时发现问题来源文档。
 
----
 
-<img width="1754" height="3671" alt="样例" src="https://github.com/user-attachments/assets/8aa45853-09eb-4f2f-9a1e-b81d9db277d0" />
-
+<img width="1746" height="7175" alt="QQ_1789884626675" src="https://github.com/user-attachments/assets/a809acab-7daa-47a9-83c3-acdc74796da3" />
