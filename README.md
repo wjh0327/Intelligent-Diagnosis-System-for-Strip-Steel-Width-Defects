@@ -40,8 +40,9 @@ src/
   eval_generate.py    # RAGAS 评估数据生成（走 Agent 真实推理链路）
   eval_ragas.py       # RAGAS 指标评估（适配 ragas 0.4.x）
   logger.py           # 统一日志（控制台 + logs/app.log）
-  app.py              # Streamlit 旧入口（保留，新功能以 API + 前端为主）
-app_file_uploader.py  # 知识库在线更新界面
+  app.py              # Streamlit 主界面（单条/批量诊断、知识问答、历史查询、结果导出）
+  app_file_uploader.py # 知识库在线更新界面
+frontend/             # Vue3 + TS + Element Plus 单页前端（单条/批量诊断、知识问答、知识库、诊断记录、系统状态）
 
 准备模型文件
 将以下文件放入 models/ 目录：
@@ -53,16 +54,67 @@ bge-reranker-v2-m3/           # 重排序模型文件夹
 
 构建知识库（需要文档与四元组）
 python src/build_kb.py
+
+> ⚠️ **停服要求**：`build_kb.py` 与 `rebuild_feature_vectors.py` 会 drop 并重建
+> Milvus 集合。主服务（Streamlit / uvicorn）与知识库在线更新页若正在运行，
+> 会与本脚本并发读写 `milvus_kb.db`（Milvus Lite 为单进程嵌入库，见目录内
+> LOCK 文件），可能导致锁冲突或集合状态异常——**全量重建前请先停止所有服务**。
+> 日常的在线更新（`app_file_uploader`）是与主服务并发的轻量 insert/flush，
+> 属设计内场景，无需停服。
+
 启动诊断系统
-方式一（推荐）：FastAPI 后端 + Web 前端
-uvicorn src.api:app --host 0.0.0.0 --port 8000
 
-方式二：Streamlit 界面
+**方式一（推荐）：FastAPI 后端 + Vue 前端**
+
+需要**两个终端同时运行**。后端（先启动）：
+
+```powershell
+conda activate steel                        # 依赖装在 steel 环境（fastapi/uvicorn/torch/pymilvus 等）
+cd "F:\RAG Agent"
+$env:DEEPSEEK_API_KEY = "sk-xxx"            # ⚠️ 启动必需，见下方说明
+python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
+```
+
+前端（另开一个终端）：
+
+```powershell
+cd "F:\RAG Agent\frontend"
+npm install                                 # 首次运行
+npm run dev                                 # Vite 开发服务器
+```
+
+浏览器访问 **http://localhost:5173**。前端把 `/api` 代理到
+`http://localhost:8000`，因此两个进程必须都在运行。
+
+> ⚠️ **`DEEPSEEK_API_KEY` 是后端启动必需项**：`service.init_resources()` 会构建
+> Agent 图（`build_agent_graph`），未设置时直接抛 `ValueError: 未设置 DEEPSEEK_API_KEY`，
+> 服务起不来。只跑诊断接口也必须给一个非空值。
+
+> ℹ️ **首次访问 `/api/health` 返回 500 属正常现象**：该接口会主动触发模型懒加载
+> （CNN 诊断模型 + bge-large-zh 嵌入 1.3G + bge-reranker 2.3G + Milvus 集合），
+> 需等 1–2 分钟。加载完成后重试即返回 `status: ok` / `resources_loaded: true`。
+
+生产构建：`npm run build`（执行 `vue-tsc -b` 类型检查 + `vite build`，产物在
+`frontend/dist/`）。注意 `api.py` 不托管该目录，生产环境需要额外的静态服务器
+（或用 `npm run preview`）。
+
+**方式二：Streamlit 界面**
+
+```powershell
+conda activate steel
+cd "F:\RAG Agent"
+$env:DEEPSEEK_API_KEY = "sk-xxx"
 streamlit run src/app.py
-浏览器访问 http://localhost:8501 即可使用。上传与 width.csv 同格式的 CSV 后，
-可在对话中让 Agent 完成批量诊断与逐条追问（页面「历史诊断查询」仅支持旧格式记录）。
+```
 
-运行日志输出到 `logs/app.log`（自动创建）；上传的 CSV 临时文件存放于 `data/tmp_uploads/`，超过 24 小时自动清理。
+浏览器访问 http://localhost:8501 即可使用。上传与 width.csv 同格式的 CSV 后，
+可在对话中让 Agent 完成批量诊断与逐条追问；单卷历史追溯同样在对话中完成
+（query_hist_diag_tool 按追溯键反查），页面「最近诊断记录」仅提供 MySQL 浏览查询。
+
+三种入口（Streamlit / FastAPI / Vue 前端）共用同一套 `src/service.py` 核心服务层，
+可按需单独运行，也可并存；但同一时刻只应有一个进程持有 `milvus_kb.db`。
+
+运行日志输出到 `logs/app.log`（自动创建，10MB × 5 份自动轮转）；上传的 CSV 临时文件存放于 `data/tmp_uploads/`，超过 24 小时自动清理。
 
 ---
 
@@ -73,9 +125,14 @@ streamlit run src/app.py
 启动 API 服务：
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "sk-xxx"   # 使用 /api/v1/query 时必需；诊断接口不需要
+conda activate steel
+cd "F:\RAG Agent"
+$env:DEEPSEEK_API_KEY = "sk-xxx"   # ⚠️ 启动必需（空值会抛 ValueError）；诊断接口本身不使用它
 python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
+
+> 首次访问会触发模型懒加载，`/api/health` 在加载完成前返回 500，属预期行为；
+> 详细说明见上文「启动诊断系统」。API 服务**不托管** `frontend/dist/`。
 
 接口一览（完整文档见 http://localhost:8000/docs）：
 
@@ -139,17 +196,23 @@ curl -X POST http://localhost:8000/api/v1/query \
 `session_id` 为 32 位十六进制字符串。提供后，API 会自动：
 
 1. 从 MEMORY（Redis/文件）读取该会话的对话历史与批量诊断状态（`batch_done`/`batch_summary`）；
-2. 问答结束后把新增对话与最新批量状态写回 MEMORY，外部系统无需每次传入完整历史。
+2. 问答结束后把新增对话与最新批量状态写回 MEMORY，外部系统无需每次传入完整历史；
+3. 请求体的 `csv_path` 与 MEMORY 中保存的不一致（同一会话上传了新 CSV）时，旧批量诊断状态自动作废（`batch_done` 置 False、`batch_summary` 清空），Agent 会对新 CSV 重新批量诊断，避免用旧结果回答新文件的问题。
 
 请求体还支持可选的 `conversation_history`、`batch_done`、`batch_summary` 字段；未提供时优先使用 MEMORY 中保存的状态。不带 `session_id` 时为无状态模式，与旧行为一致。
 
-### LLM 调用参数（环境变量，均可选）
+### LLM 调用参数（环境变量）
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `DEEPSEEK_API_KEY` | 无 | **启动必需**（空值时 `init_resources` 抛 `ValueError`）。诊断接口不使用它，但 Agent 图构建需要 |
+| `LLM_MODEL` | `deepseek-flash` | LLM 模型名。空值/空白自动回落到默认值；可改为 `deepseek-v4-pro` 等 |
 | `LLM_TIMEOUT` | `60`（秒） | LLM 单次调用超时 |
 | `LLM_MAX_RETRIES` | `3` | LLM 调用失败自动重试次数 |
 | `LLM_RETRY_BACKOFF` | `2.0`（秒） | 重试退避基数（第 n 次等待 n × backoff 秒） |
+
+> 旧的模型名 `deepseek-v4-flash` 对应的模型已下线，请求会转由 DeepSeek-V4.1-Flash
+> 承接且不享受缓存命中价，故默认值已改为 `deepseek-flash`。
 
 ### Agent 工具返回契约
 
@@ -174,7 +237,7 @@ curl -X POST http://localhost:8000/api/v1/query \
 
 ---
 
-## RAGAS 评估（可选）
+## RAGAS 评估
 
 评估的是当前系统的真实行为：评估问题集（`data/eval_questions.json`）→ Agent
 完整推理生成回答与检索上下文 → ragas 打分，而非单独的"检索 + 生成"旧链路。
@@ -192,7 +255,7 @@ python src/eval_ragas.py      # 输出 data/ragas_eval.csv 与指标摘要
 
 ---
 
-## Redis 长期记忆（可选，推荐启用）
+## Redis 长期记忆
 
 系统内置三层记忆降级策略，启动时自动选择可用后端，无需改代码：
 
@@ -302,7 +365,7 @@ redis-cli FLUSHDB                                   # 清空整个库（会清�
 
 ---
 
-## MySQL 诊断记录库（可选，推荐启用）
+## MySQL 诊断记录库
 
 单卷诊断记录默认只按追溯键存取（仅支持精确反查）。启用 MySQL 后，诊断记录落
 `rag_diag` 表，可按**故障类型、时间范围、置信度**做 SQL 查询，便于 MES 追溯与统计分析。
@@ -327,21 +390,6 @@ streamlit run src/app.py
 
 启用后，Web 界面「历史诊断查询」会额外提供“最近诊断记录”查询（按故障类型/天数），
 REST API 提供 `GET /api/v1/diag/history`。MySQL 不可用时自动回落到 Redis/文件，不影响运行。
-
----
-
-### 知识库体检（只读）
-
-```powershell
-python src/kb_audit.py
-```
-
-1. 逐 PDF 统计碎行率、平均行长、全角混用率等质量指标，输出问题文档清单
-   （扫描件 / 低质量 OCR 文本层会在入库前暴露）；
-2. 审计 Milvus `rag_knowledge` 已存文本块，垃圾块按来源文档聚合排名。
-
-报告输出至 `data/kb_audit_report.csv`，判定阈值仅供筛查参考，脚本不修改任何数据。
-建议在每次批量更新文档或重建知识库后运行一次，及时发现问题来源文档。
 
 
 <img width="1746" height="7175" alt="QQ_1789884626675" src="https://github.com/user-attachments/assets/a809acab-7daa-47a9-83c3-acdc74796da3" />
